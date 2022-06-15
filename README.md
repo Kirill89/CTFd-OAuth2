@@ -9,6 +9,7 @@ Add OAuth2 authentication to CTFd 2.x using compatible providers. Users can be l
 ## Supported Providers:
 * `azure` (Azure Active Directory)
 * `github` (GitHub)
+* `mlh` (MyMLH)
 * ... and any other Flask-Dance provider, with a little work!
 
 ## Configuration

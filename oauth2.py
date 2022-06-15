@@ -1,12 +1,11 @@
 from flask import render_template, session, redirect
-from flask_dance.contrib import azure, github
 import flask_dance.contrib
+from flask_dance.consumer import OAuth2ConsumerBlueprint
 
-from CTFd.auth import confirm, register, reset_password, login
 from CTFd.models import db, Users
 from CTFd.utils import set_config
 from CTFd.utils.logging import log
-from CTFd.utils.security.auth import login_user, logout_user
+from CTFd.utils.security.auth import login_user
 
 from CTFd import utils
 
@@ -28,6 +27,7 @@ def load(app):
         if user is not None:
             log('logins', "[{date}] {ip} - " + user.name + " - OAuth2 bridged user found")
             return user
+
     def create_user(username, displayName):
         with app.app_context():
             log('logins', "[{date}] {ip} - " + user.name + " - No OAuth2 bridged user found, creating user")
@@ -36,6 +36,7 @@ def load(app):
             db.session.commit()
             db.session.flush()
             return user
+
     def create_or_get_user(username, displayName):
         user = retrieve_user_from_database(username)
         if user is not None:
@@ -49,6 +50,10 @@ def load(app):
     ##########################
     # Provider Configuration #
     ##########################
+    mlh = OAuth2ConsumerBlueprint('mlh', 'mlh', client_id=oauth_client_id, client_secret=oauth_client_secret,
+                                  base_url='https://my.mlh.io/', token_url='https://my.mlh.io/oauth/token',
+                                  authorization_url='https://my.mlh.io/oauth/authorize',
+                                  redirect_url=authentication_url_prefix + "/mlh/confirm")
     provider_blueprints = {
         'azure': lambda: flask_dance.contrib.azure.make_azure_blueprint(
             login_url='/azure',
@@ -59,7 +64,8 @@ def load(app):
             login_url='/github',
             client_id=oauth_client_id,
             client_secret=oauth_client_secret,
-            redirect_url=authentication_url_prefix + "/github/confirm")
+            redirect_url=authentication_url_prefix + "/github/confirm"),
+        'mlh': lambda: mlh
     }
 
     def get_azure_user():
@@ -67,15 +73,24 @@ def load(app):
         return create_or_get_user(
             username=user_info["userPrincipalName"],
             displayName=user_info["displayName"])
+
     def get_github_user():
         user_info = flask_dance.contrib.github.github.get("/user").json()
         return create_or_get_user(
             username=user_info["email"],
             displayName=user_info["name"])
 
+    def get_mlh_user():
+        user_info = mlh.session.get("/api/v3/user.json").json()
+        user_info = user_info["data"]
+        return create_or_get_user(
+            username=user_info["email"],
+            displayName=user_info["first_name"] + " " + user_info["last_name"])
+
     provider_users = {
         'azure': lambda: get_azure_user(),
-        'github': lambda: get_github_user()
+        'github': lambda: get_github_user(),
+        'mlh': lambda: get_mlh_user()
     }
 
     provider_blueprint = provider_blueprints[oauth_provider]() # Resolved lambda
@@ -85,7 +100,7 @@ def load(app):
     #######################
     @provider_blueprint.route('/<string:auth_provider>/confirm', methods=['GET'])
     def confirm_auth_provider(auth_provider):
-        if not provider_users.has_key(auth_provider):
+        if auth_provider not in provider_users:
             return redirect('/')
 
         provider_user = provider_users[oauth_provider]() # Resolved lambda
@@ -104,4 +119,4 @@ def load(app):
     app.view_functions['auth.login'] = lambda: redirect(authentication_url_prefix + "/" + oauth_provider)
     app.view_functions['auth.register'] = lambda: ('', 204)
     app.view_functions['auth.reset_password'] = lambda: ('', 204)
-    app.view_functions['auth.confirm'] = lambda: ('', 204)     
+    app.view_functions['auth.confirm'] = lambda: ('', 204)
