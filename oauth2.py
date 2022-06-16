@@ -1,122 +1,142 @@
-from flask import render_template, session, redirect
-import flask_dance.contrib
+from flask_dance.contrib.github import make_github_blueprint, github
+from flask_dance.contrib.google import make_google_blueprint, google
+from flask import session, redirect, render_template, Blueprint
 from flask_dance.consumer import OAuth2ConsumerBlueprint
 
+from CTFd import utils
 from CTFd.models import db, Users
 from CTFd.utils import set_config
 from CTFd.utils.logging import log
 from CTFd.utils.security.auth import login_user
 
-from CTFd import utils
-
 
 def load(app):
-    ########################
-    # Plugin Configuration #
-    ########################
-    authentication_url_prefix = "/auth"
-    oauth_client_id = utils.get_app_config('OAUTHLOGIN_CLIENT_ID')
-    oauth_client_secret = utils.get_app_config('OAUTHLOGIN_CLIENT_SECRET')
-    oauth_provider = utils.get_app_config('OAUTHLOGIN_PROVIDER')
-    create_missing_user = utils.get_app_config('OAUTHLOGIN_CREATE_MISSING_USER')
+    authentication_url_prefix = '/auth'
+    plugin = Blueprint(
+        'CTFd-OAuth2',
+        __name__,
+        static_folder='assets',
+        template_folder='templates'
+    )
+
+    @plugin.route('apps', methods=['GET'])
+    def auth_apps():
+        return render_template('auth.html')
+
+    app.register_blueprint(plugin, url_prefix=authentication_url_prefix)
 
     ##################
     # User Functions #
     ##################
-    def retrieve_user_from_database(username):
-        user = Users.query.filter_by(email=username).first()
-        if user is not None:
-            log('logins', "[{date}] {ip} - " + user.name + " - OAuth2 bridged user found")
+    def retrieve_user_from_database(email):
+        user = Users.query.filter_by(email=email).first()
+        if user:
+            log('logins', '[{date}] {ip} - ' + email + ' - OAuth2 bridged user found')
             return user
 
-    def create_user(username, displayName):
+    def create_user(email, display_name):
         with app.app_context():
-            log('logins', "[{date}] {ip} - " + username + " - No OAuth2 bridged user found, creating user")
-            user = Users(email=username, name=displayName.strip())
+            log('logins', '[{date}] {ip} - ' + email + ' - No OAuth2 bridged user found, creating user')
+            user = Users(email=email, name=display_name.strip())
             db.session.add(user)
             db.session.commit()
-            return Users.query.filter_by(email=username).first()
+            return Users.query.filter_by(email=email).first()
 
-    def create_or_get_user(username, displayName):
-        user = retrieve_user_from_database(username)
-        if user is not None:
+    def create_or_get_user(email, display_name):
+        user = retrieve_user_from_database(email)
+        if user:
             return user
-        if create_missing_user:
-            return create_user(username, displayName)
         else:
-            log('logins', "[{date}] {ip} - " + username + " - No OAuth2 bridged user found and not configured to create missing users")
-            return None
+            return create_user(email, display_name)
 
     ##########################
     # Provider Configuration #
     ##########################
-    mlh = OAuth2ConsumerBlueprint('mlh', 'mlh', client_id=oauth_client_id, client_secret=oauth_client_secret,
-                                  base_url='https://my.mlh.io/', token_url='https://my.mlh.io/oauth/token',
-                                  authorization_url='https://my.mlh.io/oauth/authorize',
-                                  redirect_url=authentication_url_prefix + "/mlh/confirm")
-    provider_blueprints = {
-        'azure': lambda: flask_dance.contrib.azure.make_azure_blueprint(
-            login_url='/azure',
-            client_id=oauth_client_id,
-            client_secret=oauth_client_secret,
-            redirect_url=authentication_url_prefix + "/azure/confirm"),
-        'github': lambda: flask_dance.contrib.github.make_github_blueprint(
-            login_url='/github',
-            client_id=oauth_client_id,
-            client_secret=oauth_client_secret,
-            redirect_url=authentication_url_prefix + "/github/confirm"),
-        'mlh': lambda: mlh
-    }
+    github = make_github_blueprint(
+        login_url='/github',
+        client_id=utils.get_app_config('OAUTHLOGIN_GITHUB_CLIENT_ID'),
+        client_secret=utils.get_app_config('OAUTHLOGIN_GITHUB_CLIENT_SECRET'),
+        redirect_url=f'{authentication_url_prefix}/github/confirm'
+    )
 
-    def get_azure_user():
-        user_info = flask_dance.contrib.azure.azure.get("/v1.0/me").json()
-        return create_or_get_user(
-            username=user_info["userPrincipalName"],
-            displayName=user_info["displayName"])
+    mlh = OAuth2ConsumerBlueprint(
+        'mlh',
+        __name__,
+        client_id=utils.get_app_config('OAUTHLOGIN_MLH_CLIENT_ID'),
+        client_secret=utils.get_app_config('OAUTHLOGIN_MLH_CLIENT_SECRET'),
+        base_url='https://my.mlh.io/',
+        token_url='https://my.mlh.io/oauth/token',
+        authorization_url='https://my.mlh.io/oauth/authorize',
+        redirect_url=f'{authentication_url_prefix}/mlh/confirm'
+    )
+
+    google = make_google_blueprint(
+        login_url='/google',
+        client_id=utils.get_app_config('OAUTHLOGIN_GOOGLE_CLIENT_ID'),
+        client_secret=utils.get_app_config('OAUTHLOGIN_GOOGLE_CLIENT_SECRET'),
+        redirect_url=f'{authentication_url_prefix}/google/confirm'
+    )
 
     def get_github_user():
-        user_info = flask_dance.contrib.github.github.get("/user").json()
-        return create_or_get_user(
-            username=user_info["email"],
-            displayName=user_info["name"])
+        user_info = github.get('/user').json()
+        return {
+            'email': user_info['email'],
+            'display_name': user_info['name']
+        }
 
     def get_mlh_user():
-        user_info = mlh.session.get("/api/v3/user.json").json()
-        user_info = user_info["data"]
-        return create_or_get_user(
-            username=user_info["email"],
-            displayName=user_info["first_name"] + " " + user_info["last_name"])
+        user_info = mlh.session.get('/api/v3/user.json').json()
+        return {
+            'email': user_info['email'],
+            'display_name': ' '.join([user_info['first_name'], user_info['last_name']])
+        }
+
+    def get_google_user():
+        user_info = google.get('/user').json()
+        return {
+            'email': user_info['email'],
+            'display_name': user_info['name']
+        }
 
     provider_users = {
-        'azure': lambda: get_azure_user(),
-        'github': lambda: get_github_user(),
-        'mlh': lambda: get_mlh_user()
+        'github': get_github_user,
+        'mlh': get_mlh_user,
+        'google': get_google_user
     }
 
-    provider_blueprint = provider_blueprints[oauth_provider]() # Resolved lambda
-    
     #######################
     # Blueprint Functions #
     #######################
-    @provider_blueprint.route('/<string:auth_provider>/confirm', methods=['GET'])
+    @github.route('/github/confirm', methods=['GET'])
+    @mlh.route('/mlh/confirm', methods=['GET'])
+    @google.route('/google/confirm', methods=['GET'])
     def confirm_auth_provider(auth_provider):
         if auth_provider not in provider_users:
             return redirect('/')
 
-        provider_user = provider_users[oauth_provider]() # Resolved lambda
+        provider_user = provider_users[auth_provider]()
         session.regenerate()
-        if provider_user is not None:
-            login_user(provider_user)
+
+        if provider_user:
+            user = create_or_get_user(
+                email=provider_user['email'],
+                display_name=provider_user['display_name']
+            )
+            if user:
+                login_user(user)
+
         return redirect('/')
 
-    app.register_blueprint(provider_blueprint, url_prefix=authentication_url_prefix)
+    app.register_blueprint(github, url_prefix=authentication_url_prefix)
+    app.register_blueprint(mlh, url_prefix=authentication_url_prefix)
+    app.register_blueprint(google, url_prefix=authentication_url_prefix)
 
     ###############################
     # Application Reconfiguration #
     ###############################
     # ('', 204) is "No Content" code
     set_config('registration_visibility', False)
-    app.view_functions['auth.login'] = lambda: redirect(authentication_url_prefix + "/" + oauth_provider)
+    app.view_functions['auth.login'] = lambda: redirect(f'{authentication_url_prefix}/apps')
     app.view_functions['auth.register'] = lambda: ('', 204)
     app.view_functions['auth.reset_password'] = lambda: ('', 204)
     app.view_functions['auth.confirm'] = lambda: ('', 204)
