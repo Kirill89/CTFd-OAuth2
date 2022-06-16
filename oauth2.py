@@ -72,13 +72,18 @@ def load(app):
 
     google = make_google_blueprint(
         login_url='/google',
+        scope=[
+            "openid",
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/userinfo.profile",
+        ],
         client_id=utils.get_app_config('OAUTHLOGIN_GOOGLE_CLIENT_ID'),
         client_secret=utils.get_app_config('OAUTHLOGIN_GOOGLE_CLIENT_SECRET'),
         redirect_url=f'{authentication_url_prefix}/google/confirm'
     )
 
     def get_github_user():
-        user_info = github.get('/user').json()
+        user_info = github.session.get('/user').json()
         return {
             'email': user_info['email'],
             'display_name': user_info['name']
@@ -86,13 +91,14 @@ def load(app):
 
     def get_mlh_user():
         user_info = mlh.session.get('/api/v3/user.json').json()
+        user_info = user_info['data']
         return {
             'email': user_info['email'],
             'display_name': ' '.join([user_info['first_name'], user_info['last_name']])
         }
 
     def get_google_user():
-        user_info = google.get('/user').json()
+        user_info = google.session.get('/oauth2/v2/userinfo').json()
         return {
             'email': user_info['email'],
             'display_name': user_info['name']
@@ -107,9 +113,9 @@ def load(app):
     #######################
     # Blueprint Functions #
     #######################
-    @github.route('/github/confirm', methods=['GET'])
-    @mlh.route('/mlh/confirm', methods=['GET'])
-    @google.route('/google/confirm', methods=['GET'])
+    @github.route('/<string:auth_provider>/confirm', methods=['GET'])
+    @mlh.route('/<string:auth_provider>/confirm', methods=['GET'])
+    @google.route('/<string:auth_provider>/confirm', methods=['GET'])
     def confirm_auth_provider(auth_provider):
         if auth_provider not in provider_users:
             return redirect('/')
